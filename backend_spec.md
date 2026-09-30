@@ -25,7 +25,7 @@ YouTube のコメント欄から AI（OpenAI）を用いてセトリを自動抽
 | スケジューラ | Loco 組み込みスケジューラ（`scheduler:` / `cargo loco scheduler`） | - | cron は UTC |
 | 認証 | JWT（`loco_rs::auth::jwt`） | - | API キー認証も実装あり |
 | バリデーション | `validator` | 0.20 | |
-| ビューエンジン | Tera + `fluent-templates` | 0.13 | i18n 用。API レスポンスは基本 JSON |
+| ビューエンジン | Tera + `fluent-templates` | Tera 1.20 / `fluent-templates` 0.13 | i18n 用。API レスポンスは基本 JSON。メールテンプレートは `tera::Tera::one_off` で直接レンダリングする（`src/mailers/auth.rs`） |
 | HTTP クライアント | `reqwest` | 0.12 | `json` フィーチャ |
 | 日付 | `chrono` | 0.4 | |
 | その他 | `regex` 1.11, `uuid` 1.6, `serde` / `serde_json` 1, `axum-extra` 0.10 | | |
@@ -48,7 +48,8 @@ YouTube のコメント欄から AI（OpenAI）を用いてセトリを自動抽
 | OpenAI Chat Completions API | コメントからセトリ JSON 抽出（`gpt-4o-mini`） | Bearer Token（`OPENAI_API_KEY`） | `src/workers/openai_client.rs` |
 | Spotify Web API | 曲名からアーティスト名を補完 | Client Credentials（`SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET`） | `src/workers/spotify_client.rs` |
 | Slack Incoming Webhook | セトリ自動作成の結果通知 | Webhook URL（`SLACK_WEBHOOK_URL`、任意） | `src/workers/slack_client.rs` |
-| SMTP | 認証メール送信（welcome / forgot / magic link） | `config` の `mailer.smtp` | `src/mailers/auth.rs` |
+| Cloudflare Email Sending REST API | 認証・通知メール送信（既定経路） | Bearer Token（`CLOUDFLARE_API_TOKEN`）+ `CLOUDFLARE_ACCOUNT_ID` | `src/mailers/cloudflare_client.rs` / `src/mailers/cloudflare_worker.rs` |
+| SMTP | 上記のフォールバック（`CLOUDFLARE_API_TOKEN` 未設定時。開発 / テスト用） | `config` の `mailer.smtp` | `src/mailers/auth.rs` |
 
 ---
 
@@ -90,16 +91,21 @@ diff の承認（`song_diffs::Model::approve`）または管理画面・AI か�
 
 ### 4.1 認証（アプリ独自・`src/controllers/sessions.rs`）
 
-フロントエンドはこちらを使用する。`name` でログインし、内部的に `{name}@local` を email 識別子に変換する。
+フロントエンドはこちらを使用する。ログイン識別子は `name`（`users::Model::find_by_name`）で、`email` は登録時に本人が入力した実アドレスをそのまま保持する。
 
 | Method | Path | 認証 | 説明 |
 |--------|------|------|------|
-| POST | `/api/user` | 不要 | ユーザー登録（`name`, `password`, `password_confirmation`）。成功時 **201**・`{ message, user: { id, name, kind }, token }` |
+| POST | `/api/user` | 不要 | ユーザー登録（`name`, `email`, `password`, `password_confirmation`）。成功時 **201**・`{ message, user: { id, name, kind }, token }` |
 | GET | `/api/user` | JWT | ログイン中ユーザー取得（`{ id, name, kind }`） |
 | POST | `/api/session` | 不要 | ログイン（`name`, `password`）。`{ message, user, token }` |
 | DELETE | `/api/session` | JWT | ログアウト（`{ message: "ログアウトしました", user: null }`。トークン破棄はクライアント側） |
 
-- 失敗時は `400 Bad Request`・`{ "message": "..." }`（例「ユーザー名またはパスワードが違います」「このユーザー名は既に使われています」）。
+- 失敗時は `400 Bad Request`・`{ "message": "..." }`。登録時のメッセージは発生原因で切り替える。
+  - `ModelError::EntityAlreadyExists`（email 重複）→「このメールアドレスは既に登録されています」
+  - `ModelError::Message("name already exists")`（name 重複）→「このユーザー名は既に使われています」
+  - その他（email 形式など `validator` のエラー）→「入力内容をご確認ください（メールアドレスの形式などを確認してください）」
+  - ログイン失敗 →「ユーザー名またはパスワードが違います」
+- 登録成功時は `set_email_verification_sent` で `email_verification_token` / `email_verification_sent_at` を記録し、ウェルカムメール（メールアドレス確認リンク付き）を送信する。`ADMIN_NOTIFICATION_EMAIL` が設定されていれば管理者宛の新規登録通知も送信する（この通知の失敗は `tracing::error!` でログ出力するのみで、登録レスポンスは成功扱い）。
 - メール認証はログインの要件ではない（`password` の一致のみ検証）。
 
 ### 4.2 認証（Loco SaaS スターター既定・`src/controllers/auth.rs`）
@@ -108,7 +114,7 @@ diff の承認（`song_diffs::Model::approve`）または管理画面・AI か�
 
 | Method | Path | 説明 |
 |--------|------|------|
-| POST | `/api/auth/register` | 登録 + welcome メール送信 |
+| POST | `/api/auth/register` | 登録 + welcome メール送信 + 管理者通知メール送信（`ADMIN_NOTIFICATION_EMAIL` 設定時のみ。失敗はログ出力のみ） |
 | POST | `/api/auth/verify/{token}` | メール認証（GET でも可） |
 | POST | `/api/auth/login` | ログイン（`email`, `password`） |
 | POST | `/api/auth/forgot` | パスワードリセットトークン発行・メール送信 |
@@ -245,6 +251,7 @@ diff の承認（`song_diffs::Model::approve`）または管理画面・AI か�
 - 署名鍵は `auth.jwt.secret`（本番は環境変数 `JWT_SECRET`、開発 / テストは `config` 直書き）。
 - パスワードは Argon2（`loco_rs::hash`）でハッシュ化。
 - `users.pid` / `users.api_key` はエンティティの `before_save` で挿入時に採番（`api_key` は `lo-<uuid>`）。
+- ログイン識別子は `users.name`（unique index `idx-users-name-unique`）。`users.email` も unique で、メール送信先として使用する。`name` の重複はモデル層（`create_with_password` のトランザクション内）でも明示的にチェックする。
 - **API キー認証**も `Authenticable` 実装として存在するが、フロントエンドでは未使用。
 - マジックリンク認証（`MAGIC_LINK_LENGTH = 32` / `MAGIC_LINK_EXPIRATION_MIN = 5`）。
 
@@ -366,6 +373,7 @@ diff の承認（`song_diffs::Model::approve`）または管理画面・AI か�
 |------|------|
 | `SongItemsCreatorWorker` | セトリ自動作成パイプライン一式 |
 | `SetlistFetchWorker` | 指定動画のセトリ再取得 |
+| `CloudflareMailerWorker` | `mailer::Email` を Cloudflare Email Sending REST API 経由で送信（`src/mailers/cloudflare_worker.rs`） |
 
 ### 7.2 タスク（`src/app.rs::register_tasks` で登録）
 
@@ -385,9 +393,32 @@ diff の承認（`song_diffs::Model::approve`）または管理画面・AI か�
 
 - `ViewEngineInitializer`（`src/initializers/view_engine.rs`）— Tera ビューエンジンを構築。`assets/i18n` が存在すれば `fluent-templates` の `t` 関数を登録（`en-US` 既定、`assets/i18n/_shared.ftl` を共有リソースに）。
 
-### 7.5 メーラー（`src/mailers/auth.rs`）
+### 7.5 メーラー（`src/mailers/`）
 
-`AuthMailer` が welcome / forgot password / magic link の 3 種を送信。テンプレートは `src/mailers/auth/{welcome,forgot,magic_link}/{subject,html,text}.t`。
+| ファイル | 役割 |
+|---------|------|
+| `auth.rs` | `AuthMailer`。テンプレートのレンダリングと送信経路の振り分け |
+| `cloudflare_client.rs` | `CloudflareEmailClient`。Cloudflare Email Sending REST API（`POST https://api.cloudflare.com/client/v4/accounts/{account_id}/email/sending/send`）へ `reqwest` で送信 |
+| `cloudflare_worker.rs` | `CloudflareMailerWorker`。`BackgroundWorker<mailer::Email>` 実装。実行時に `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` を読んでクライアントを生成 |
+
+**メール種別とテンプレート**（`src/mailers/auth/<kind>/{subject,html,text}.t`）:
+
+| メソッド | テンプレート | 宛先 | 内容 |
+|---------|------------|------|------|
+| `send_welcome` | `welcome` | 登録ユーザー | 日本語・英語併記のメールアドレス確認メール。件名「【Vtuber-Song.com】ご登録ありがとうございます / Welcome to Vtuber-Song.com」。リンクは `{domain}/api/auth/verify/{verifyToken}` |
+| `forgot_password` | `forgot` | 対象ユーザー | パスワードリセット（Loco スターター既定の英文テンプレート） |
+| `send_magic_link` | `magic_link` | 対象ユーザー | マジックリンク（同上）。`magic_link_token` が無い場合はエラー |
+| `notify_admin_of_registration` | `admin_notification` | `ADMIN_NOTIFICATION_EMAIL` | 新規登録の通知（名前・メールアドレス）。env 未設定・空文字なら何もせず `Ok(())` |
+
+**テンプレートのレンダリング**: Loco の `mail_template`（`include_dir!`）ではなく `include_str!` で各テンプレートを埋め込み、`tera::Tera::one_off` でレンダリングする。HTML のみ autoescape を有効にし、subject / text は無効（`render` / `render_email` ヘルパ）。
+
+**送信経路の振り分け**（`AuthMailer::dispatch`）:
+
+1. `AuthMailer::opts()` の `from` は `CLOUDFLARE_EMAIL_FROM`（未設定時は `mailer::DEFAULT_FROM_SENDER`）。
+2. `CLOUDFLARE_API_TOKEN` が設定されていれば `CloudflareMailerWorker::perform_later` にキューイング（staging / production）。
+3. 未設定なら Loco 組み込みの SMTP メーラー（`Self::mail`）にフォールバック。`development` / `test` 以外の環境では「送信されない可能性がある」旨を `tracing::error!` で警告する。
+
+**メール内リンクの URL**: `ctx.config.server.full_url()`（`host:port`）ではなく環境変数 `APP_HOST` を直接参照する（`public_app_url()`、未設定時 `http://localhost:5150`）。Railway のエッジでは公開ドメインが 443 で TLS を終端し内部の別ポートへルーティングするため、`:{port}` を付けると壊れた URL になる（`fix_spec.md` の `fix/issue-163` 参照）。
 
 ---
 
@@ -404,7 +435,11 @@ diff の承認（`song_diffs::Model::approve`）または管理画面・AI か�
 | `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | 同上 | Spotify Client Credentials |
 | `SLACK_WEBHOOK_URL` | `SongItemsCreatorWorker` | Slack 通知先（任意。未設定なら通知スキップ） |
 | `PORT` | `config/production.yaml` | 待受ポート（既定 5150） |
-| `APP_HOST` | `config/production.yaml` | メール等の URL 生成に使うホスト（既定 `http://localhost:5150`） |
+| `APP_HOST` | `config/production.yaml` / `src/mailers/auth.rs::public_app_url` | メール内リンクの組み立てに使う公開 URL。**ポートを含めない**（例 `https://vtuber-song-list-staging.up.railway.app`）。既定 `http://localhost:5150` |
+| `ADMIN_NOTIFICATION_EMAIL` | `AuthMailer::notify_admin_of_registration` | 新規会員登録の通知先（任意。未設定・空文字なら通知スキップ） |
+| `CLOUDFLARE_API_TOKEN` | `AuthMailer::dispatch` / `CloudflareMailerWorker` | Cloudflare Email Sending の API トークン。**設定されているかどうかが送信経路の判定条件**（未設定なら SMTP フォールバック） |
+| `CLOUDFLARE_ACCOUNT_ID` | `CloudflareMailerWorker` | Cloudflare アカウント ID（送信 API の URL に使用） |
+| `CLOUDFLARE_EMAIL_FROM` | `AuthMailer::opts` | 送信元アドレス。Cloudflare Email Sending でオンボーディング済みのドメインであること |
 | `FRONTEND_URL` | `config/production.yaml` | CORS の許可オリジン（既定 `http://localhost:3001`） |
 | `DB_CONNECT_TIMEOUT` / `DB_IDLE_TIMEOUT` / `DB_MIN_CONNECTIONS` / `DB_MAX_CONNECTIONS` | `config/development.yaml` / `config/test.yaml` | コネクションプール設定 |
 | `BUILD_SHA` / `GITHUB_SHA` | `src/app.rs::app_version`（コンパイル時 `option_env!`） | バージョン表示用 |
@@ -465,13 +500,20 @@ Cloudflare Workers（OpenNext アダプタ `@opennextjs/cloudflare`）。詳細�
 | ファイル | 対象 |
 |---------|------|
 | `tests/models/users.rs` | `create_with_password` / `find_by_email` / `find_by_pid` / バリデーション / 重複エラー（スナップショット） |
-| `tests/requests/auth.rs` | `/api/auth/*`（登録・認証・ログイン・マジックリンク・リセット・再送）（スナップショット） |
-| `tests/requests/sessions.rs` | `/api/user`・`/api/session` |
+| `tests/requests/auth.rs` | `/api/auth/*`（登録・認証・ログイン・マジックリンク・リセット・再送）（スナップショット）。`ADMIN_NOTIFICATION_EMAIL` 設定時に welcome + 管理者通知の 2 通が送られることも検証 |
+| `tests/requests/sessions.rs` | `/api/user`・`/api/session`（`name` 重複 / `email` 重複 / パスワード不一致の 400、登録時の welcome メール送信） |
 | `tests/requests/channels.rs` | 公開フィルタ・ID 取得・404 |
 | `tests/requests/song_diffs.rs` | 会員の pending 投稿・管理者の即時 approved・未認証拒否・一覧 |
 | `tests/requests/admin/song_diffs.rs` | 承認・却下・非管理者拒否・pending 一覧 |
 | `tests/requests/prepare_data.rs` / `session_prepare_data.rs` | テストデータ生成ヘルパ |
 | `tests/tasks/mod.rs` / `tests/workers/mod.rs` | 空（プレースホルダ） |
+
+ユニットテスト（`#[cfg(test)]` モジュール）:
+
+| 対象 | 内容 |
+|------|------|
+| `src/mailers/auth.rs` | Tera テンプレートのレンダリング・HTML autoescape |
+| `src/mailers/cloudflare_client.rs` | `parse_mailbox`（`Name <addr>` 形式 / 素のアドレス） |
 
 ### 10.3 実行
 
@@ -497,14 +539,22 @@ cargo fmt --all -- --check
 
 **トリガー**: `push`（`master` / `main` / `staging`）・`pull_request`
 
-| ジョブ | 内容 |
-|-------|------|
-| `rustfmt` | `cargo fmt --all -- --check` |
-| `clippy` | `cargo clippy --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery -W rust-2018-idioms` |
-| `test` | `postgres` + `redis` サービスを立て `cargo test --all-features --all`（`DATABASE_URL` / `REDIS_URL` を注入） |
-| `frontend-lint` | `frontend/` で `pnpm lint` + `pnpm tsc --noEmit`（Node 22 / pnpm） |
-| `frontend-test` | `frontend/` で `pnpm test:ci` |
-| `deploy` | `frontend-lint` / `frontend-test` 成功後、`push` かつ `main` / `staging` のとき Cloudflare Workers へデプロイ（`main` → `pnpm cf:deploy`、`staging` → `pnpm cf:deploy:staging`）。GitHub Environments（`... / production` / `... / staging`）と Secrets（`NEXT_PUBLIC_API_BASE_URL` / `NEXT_PUBLIC_APP_ENV` / `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`）を使用 |
+| ジョブ | 依存 / 実行条件 | 内容 |
+|-------|---------------|------|
+| `changes` | - | `dorny/paths-filter@v3` で変更パスを判定し `backend` / `frontend` の 2 つの出力を返す |
+| `rustfmt` | `changes.outputs.backend == 'true'` | `cargo fmt --all -- --check` |
+| `clippy` | 同上 | `cargo clippy --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery -W rust-2018-idioms` |
+| `test` | 同上 | `postgres` + `redis` サービスを立て `cargo test --all-features --all`（`DATABASE_URL` / `REDIS_URL` を注入） |
+| `frontend-lint` | `changes.outputs.frontend == 'true'` | `frontend/` で `pnpm lint` + `pnpm tsc --noEmit`（Node 22 / pnpm） |
+| `frontend-test` | 同上 | `frontend/` で `pnpm test:ci` |
+| `deploy` | `changes` / `frontend-lint` / `frontend-test` 成功後、`frontend == 'true'` かつ `push` かつ `main` / `staging` | Cloudflare Workers へデプロイ（`main` → `pnpm cf:deploy`、`staging` → `pnpm cf:deploy:staging`）。GitHub Environments（`... / production` / `... / staging`）と Secrets（`NEXT_PUBLIC_API_BASE_URL` / `NEXT_PUBLIC_APP_ENV` / `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`）を使用 |
+
+**パスフィルタの定義**:
+
+| 出力 | 対象パス |
+|------|---------|
+| `backend` | `src/**` `migration/**` `tests/**` `config/**` `Cargo.toml` `Cargo.lock` `Dockerfile` `docker-compose.yaml` `.github/workflows/ci.yaml` |
+| `frontend` | `frontend/**` `.github/workflows/ci.yaml` |
 
 > バックエンド専用のデプロイジョブは CI には存在しない（`Dockerfile` によるコンテナ運用）。
 

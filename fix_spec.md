@@ -138,3 +138,31 @@
 **修正内容:**
 
 - `frontend/next.config.ts`: `headers()` を `process.env.NODE_ENV !== "production"` のとき空配列を返すように変更し、CSP・`Permissions-Policy` を本番ビルドのみに限定。本番ビルドのCSP内容自体は変更なし。
+
+---
+
+## fix/issue-163: ウェルカムメールが英語のLocoスターター既定文面で、確認リンクのURLも壊れている
+
+**症状:** 会員登録時に届くウェルカムメールが「Welcome to Loco!」という英文のスターター既定文面のまま。さらに本文中のメールアドレス確認リンクが `https://example.com:5150/api/auth/verify/...` のようにポート番号付きで組み立てられ、クリックしても到達できない。
+
+**原因:**
+
+- 文面は Loco SaaS スターターのテンプレート（`src/mailers/auth/welcome/{subject,html,text}.t`）を未編集のまま使っていた。
+- URL は `ctx.config.server.full_url()` を使っており、これは `{host}:{port}` を連結する。Railway のエッジでは公開ドメインが 443 で TLS を終端し、内部的には別のコンテナポートへルーティングされるため、公開 URL に `:{port}` を付けると壊れる。
+
+**修正内容:**
+
+- `src/mailers/auth/welcome/{subject,html,text}.t`: 日本語・英語併記の Vtuber-Song.com 文面に差し替え。件名は「【Vtuber-Song.com】ご登録ありがとうございます / Welcome to Vtuber-Song.com」。
+- `src/mailers/auth.rs`: `public_app_url()` を追加し、環境変数 `APP_HOST`（未設定時 `http://localhost:5150`）を直接参照するよう変更。welcome / forgot / magic link の全テンプレートに渡す `domain` / `host` をこの値に統一。`APP_HOST` にはポート無しの公開 URL を設定する。
+
+---
+
+## fix/issue-166: メールHTMLテンプレート先頭の余分な `;` が本文に混入する
+
+**症状:** 送信されたメールの HTML 本文が `;<html>` で始まり、メールクライアント上で先頭に `;` が表示される。
+
+**原因:** Loco SaaS スターターが生成した `html.t` 3 ファイル（`welcome` / `forgot` / `magic_link`）の 1 行目が `;<html>` になっており、テンプレートの一部としてそのまま出力されていた。
+
+**修正内容:**
+
+- `src/mailers/auth/{welcome,forgot,magic_link}/html.t`: 先頭の `;` を削除（`;<html>` → `<html>`）。

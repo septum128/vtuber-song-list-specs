@@ -11,6 +11,7 @@
   - `m20260318_000006_create_song_diffs.rs`
   - `m20260319_000007_create_favorites.rs`
   - `m20260328_022428_add_icon_url_to_channels.rs`
+  - `m20260926_134141_add_unique_index_to_users_name.rs`
 - `src/models/_entities/` 配下の SeaORM エンティティ（`sea-orm-codegen` 生成物・手動編集禁止）
 - `src/models/` 配下のビジネスロジック層（Enum 定数・スコープ・ファインダ）
 
@@ -49,10 +50,10 @@
 |---|---|---|---|---|
 | id | integer | ✓ | auto increment | PK |
 | pid | uuid | ✓ | - | JWT の subject。`before_save` で挿入時に採番 |
-| email | varchar | ✓ | - | unique |
+| email | varchar | ✓ | - | unique。登録時にユーザーが入力した実アドレス（メール送信先） |
 | password | varchar | ✓ | - | Argon2 ハッシュ（`loco_rs::hash`） |
 | api_key | varchar | ✓ | - | unique。`before_save` で `lo-<uuid>` を採番 |
-| name | varchar | ✓ | - | ログイン識別子として使用 |
+| name | varchar | ✓ | - | unique。ログイン識別子として使用 |
 | reset_token | varchar | - | - | パスワードリセット用 |
 | reset_sent_at | timestamptz | - | - | |
 | email_verification_token | varchar | - | - | |
@@ -75,6 +76,7 @@
 **インデックス**:
 - `email` (unique)
 - `api_key` (unique)
+- `name` (unique) — `idx-users-name-unique`（`m20260926_134141_add_unique_index_to_users_name`）。ログイン識別子の一意性を DB 側で保証する
 
 ---
 
