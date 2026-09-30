@@ -77,7 +77,7 @@ frontend/
 
 `/admin/*` は `AdminLayout` が `user.kind !== 10`（`UserKind.ADMIN`）のとき `/` へリダイレクトする。
 
-> 旧仕様にあった `/about` `/inquiry` `/maintenance` は存在しない。問い合わせ導線は `/`（ホーム）のテキストリンク（Twitter / メール / GitHub Issue）。
+> 旧仕様にあった `/about` `/inquiry` `/maintenance` は存在しない。問い合わせ導線は `/`（ホーム）の箇条書きリンク（お問い合わせ: Twitter リプライ（DM 不可）/ メール / マシュマロ、不具合報告: GitHub Issue）。
 
 ---
 
@@ -131,7 +131,7 @@ frontend/
 | `/api/channels` `/api/channels/{id}` | GET | `useChannels` / `useChannel` |
 | `/api/videos` `/api/videos/{id}` | GET | `useVideos` / `useVideo` |
 | `/api/song_items` `/api/song_items/{id}` | GET | `useSongItems` / `useSongItem` |
-| `/api/user` | GET / POST | `useAuth`（現在ユーザー・登録） |
+| `/api/user` | GET / POST | `useAuth`（現在ユーザー・登録。POST のボディは `name` / `email` / `password` / `password_confirmation`） |
 | `/api/session` | POST / DELETE | `useAuth`（ログイン・ログアウト） |
 | `/api/member/song_items/{id}/song_diffs` | GET / POST | `useSongDiffs` / `useCreateSongDiff` |
 | `/api/member/favorites` `/api/member/favorites/ids` `/api/member/favorites/{id}` | GET / POST / DELETE | `useFavorites`（`useFavoriteIds` / `useFavoriteList` / `useToggleFavorite`） |
@@ -172,7 +172,7 @@ AuthResponse = { message, user: UserType, token }
 
 - チャンネル一覧・詳細の閲覧。
 - チャンネル詳細で「曲一覧」（曲名・アーティスト・動画タイトル・日付でフィルタ、YouTube のタイムスタンプ付きリンク）と「動画一覧」（歌枠のみ）をタブ切替。
-- ユーザー登録（`name` / パスワード）・ログイン。
+- ユーザー登録（`name` / メールアドレス / パスワード）・ログイン。登録フォーム（`containers/User/RegisterForm.tsx`）はメールアドレスを `type="email"` / `autoComplete="email"` の必須項目（255 文字以内）として受け取り、登録後にメールアドレス確認リンク付きのウェルカムメールが送信される。ログインは `name` で行う。
 - ログインユーザーは曲のお気に入り登録（ハートボタン）と、お気に入り一覧ページの閲覧。
 - ログインユーザーは各曲の「修正を提案」モーダルから修正履歴の閲覧と `song_diff` の投稿。
 - ライト / ダークテーマ切替（Navbar のボタン）。
