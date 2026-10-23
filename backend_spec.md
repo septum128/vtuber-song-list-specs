@@ -15,21 +15,21 @@ YouTube のコメント欄から AI（OpenAI）を用いてセトリを自動抽
 | カテゴリ | 技術 | バージョン | 備考 |
 |---------|------|----------|------|
 | 言語 | Rust | edition 2021 | `rustfmt` `max_width = 100` |
-| フレームワーク | Loco | 0.16 | SaaS スターターテンプレート由来 |
+| フレームワーク | Loco | 1.2 | SaaS スターターテンプレート由来 |
 | Web サーバー | Axum | 0.8 | |
-| ORM | SeaORM | 1.1 | `sqlx-postgres` / `sqlx-sqlite` / `runtime-tokio-rustls` |
-| DB マイグレーション | `sea-orm-migration` | - | `migration/` クレート |
+| ORM | SeaORM | 2.0 | `sqlx-postgres` / `sqlx-sqlite` / `runtime-tokio-rustls` |
+| DB マイグレーション | `sea-orm-migration` | 2.0 | `migration/` クレート |
 | データベース | PostgreSQL | - | 開発では SQLite も可 |
 | 非同期ランタイム | Tokio | 1.45 | `rt-multi-thread` |
 | ジョブ実行 | Loco `BackgroundWorker`（`workers.mode: BackgroundAsync`） | - | プロセス内非同期。テスト時は `ForegroundBlocking` |
 | スケジューラ | Loco 組み込みスケジューラ（`scheduler:` / `cargo loco scheduler`） | - | cron は UTC |
 | 認証 | JWT（`loco_rs::auth::jwt`） | - | API キー認証も実装あり |
 | バリデーション | `validator` | 0.20 | |
-| ビューエンジン | Tera + `fluent-templates` | Tera 1.20 / `fluent-templates` 0.13 | i18n 用。API レスポンスは基本 JSON。メールテンプレートは `tera::Tera::one_off` で直接レンダリングする（`src/mailers/auth.rs`） |
-| HTTP クライアント | `reqwest` | 0.12 | `json` フィーチャ |
+| ビューエンジン | Tera + `fluent-templates` | Tera 1.20 / `fluent-templates` 0.15 | i18n 用。`src/initializers/view_engine.rs` で `TeraView::build_with_post_process` により Fluent の `t` 関数を登録。API レスポンスは基本 JSON。メールテンプレートは `tera::Tera::one_off` で直接レンダリングする（`src/mailers/auth.rs`） |
+| HTTP クライアント | `reqwest` | 0.13 | `json` / `form` フィーチャ（`form` は Spotify トークン取得の `application/x-www-form-urlencoded` 送信用） |
 | 日付 | `chrono` | 0.4 | |
 | その他 | `regex` 1.11, `uuid` 1.6, `serde` / `serde_json` 1, `axum-extra` 0.10 | | |
-| テスト | `insta`（スナップショット）, `serial_test`, `rstest`, `loco-rs` testing | - | 実 PostgreSQL 必須（モックなし） |
+| テスト | `insta`（スナップショット）, `serial_test` 4, `rstest` 0.25, `loco-rs` testing | - | 実 PostgreSQL 必須（モックなし） |
 
 > **Redis について**: `Cargo.toml` に Redis 依存はなく、`config/` にもキュー設定はない。ワーカーは `BackgroundAsync`（プロセス内）で動作する。CI のみ Redis サービスと `REDIS_URL` を用意している。
 
@@ -216,7 +216,7 @@ diff の承認（`song_diffs::Model::approve`）または管理画面・AI か�
 
 | Method | Path | 説明 |
 |--------|------|------|
-| GET | `/api/admin/videos/` | `channel_id?`, `only_song_lives?`(bool・タイトルのキーワード一致), `page?`, `count?`。`published_at` 降順 |
+| GET | `/api/admin/videos/` | `channel_id?`, `only_song_lives?`(bool・タイトルのキーワード一致), `sort?`, `page?`, `count?`。既定は `published_at` 降順。`sort=id` のとき `id` 降順（登録の新しい順）。`id` 以外の値は既定扱い |
 | POST | `/api/admin/videos/` | 作成（`video_id`（URL でも可）, `channel_id`）。重複チェック → YouTube API 取得 → 保存 → `SongItemsCreatorWorker` 投入 |
 | POST | `/api/admin/videos/bulk` | TSV 一括登録（`{ tsv }`。1行目ヘッダをスキップ、`チャンネル custom_name <TAB> URL`）。`{ succeeded, skipped, failed }` を返す |
 | POST | `/api/admin/videos/bulk_fetch_setlist` | `{ video_ids: [], force? }` → `SetlistFetchWorker` 投入 |
@@ -337,7 +337,7 @@ diff の承認（`song_diffs::Model::approve`）または管理画面・AI か�
 
 ### 6.3 SetlistFetchWorker（既存動画向け）
 
-- 引数: `{ video_ids: [i32], force: bool }`。
+- 引数: `{ video_ids: [i64], force: bool }`。
 - `force = true`: 対象動画の `song_items` / `song_diffs` を全削除し `status` を `fetched(10)` にリセットしてから再処理。
 - `force = false`: `status >= song_items_created(20)` の動画はスキップ。
 - 各動画に対し `process_song_items_for_video` → `backfill_history_for_video` → `backfill_spotify_for_video` を実行。
@@ -455,8 +455,8 @@ diff の承認（`song_diffs::Model::approve`）または管理画面・AI か�
 
 | ステージ | 内容 |
 |---------|------|
-| builder | `rust:slim`。`pkg-config` / `libssl-dev` を導入し `cargo build --release` |
-| runtime | `ubuntu:24.04`。`ca-certificates` / `libssl3` のみ。`vtuber_song_list-cli` バイナリ・`config/`・`assets/` をコピー |
+| builder | `rust:slim`。`pkg-config` のみ導入し `cargo build --release`（TLS は `rustls` のため OpenSSL 不要） |
+| runtime | `ubuntu:24.04`。`ca-certificates` のみ。`vtuber_song_list-cli` バイナリ・`config/`・`assets/` をコピー |
 
 - 公開ポート: 5150
 - 起動コマンド: `./vtuber_song_list-cli start --environment production --all`（`--all` により Web サーバ + ワーカー + スケジューラを同一プロセスで起動）
@@ -505,6 +505,7 @@ Cloudflare Workers（OpenNext アダプタ `@opennextjs/cloudflare`）。詳細�
 | `tests/requests/channels.rs` | 公開フィルタ・ID 取得・404 |
 | `tests/requests/song_diffs.rs` | 会員の pending 投稿・管理者の即時 approved・未認証拒否・一覧 |
 | `tests/requests/admin/song_diffs.rs` | 承認・却下・非管理者拒否・pending 一覧 |
+| `tests/requests/admin/videos.rs` | 一括公開 / 一括非公開・非管理者拒否・空 `video_ids` の拒否・`sort=id` による ID 降順ソート |
 | `tests/requests/prepare_data.rs` / `session_prepare_data.rs` | テストデータ生成ヘルパ |
 | `tests/tasks/mod.rs` / `tests/workers/mod.rs` | 空（プレースホルダ） |
 
@@ -521,13 +522,13 @@ Cloudflare Workers（OpenNext アダプタ `@opennextjs/cloudflare`）。詳細�
 # 全テスト（PostgreSQL 必須）
 DATABASE_URL=postgres://loco:loco@localhost:5432/vtuber-song-list_development \
 REDIS_URL=redis://localhost:6379 \
-cargo test --all-features --all
+cargo test --locked --all-features --all
 
 # 単体
 cargo test <test_name>
 
 # Lint / フォーマット
-cargo clippy --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery -W rust-2018-idioms
+cargo clippy --locked --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery -W rust-2018-idioms
 cargo fmt --all -- --check
 ```
 
@@ -543,8 +544,8 @@ cargo fmt --all -- --check
 |-------|---------------|------|
 | `changes` | - | `dorny/paths-filter@v3` で変更パスを判定し `backend` / `frontend` の 2 つの出力を返す |
 | `rustfmt` | `changes.outputs.backend == 'true'` | `cargo fmt --all -- --check` |
-| `clippy` | 同上 | `cargo clippy --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery -W rust-2018-idioms` |
-| `test` | 同上 | `postgres` + `redis` サービスを立て `cargo test --all-features --all`（`DATABASE_URL` / `REDIS_URL` を注入） |
+| `clippy` | 同上 | `cargo clippy --locked --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery -W rust-2018-idioms` |
+| `test` | 同上 | `postgres` + `redis` サービスを立て `cargo test --locked --all-features --all`（`DATABASE_URL` / `REDIS_URL` を注入） |
 | `frontend-lint` | `changes.outputs.frontend == 'true'` | `frontend/` で `pnpm lint` + `pnpm tsc --noEmit`（Node 22 / pnpm） |
 | `frontend-test` | 同上 | `frontend/` で `pnpm test:ci` |
 | `deploy` | `changes` / `frontend-lint` / `frontend-test` 成功後、`frontend == 'true'` かつ `push` かつ `main` / `staging` | Cloudflare Workers へデプロイ（`main` → `pnpm cf:deploy`、`staging` → `pnpm cf:deploy:staging`）。GitHub Environments（`... / production` / `... / staging`）と Secrets（`NEXT_PUBLIC_API_BASE_URL` / `NEXT_PUBLIC_APP_ENV` / `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`）を使用 |
@@ -557,6 +558,10 @@ cargo fmt --all -- --check
 | `frontend` | `frontend/**` `.github/workflows/ci.yaml` |
 
 > バックエンド専用のデプロイジョブは CI には存在しない（`Dockerfile` によるコンテナ運用）。
+>
+> CI の `clippy` / `test` は `--locked` 付きで実行するため、`Cargo.lock` が `Cargo.toml` と整合していないと失敗する。
+
+**Dependabot**（`.github/dependabot.yml`）: `npm`（`/frontend`）と `cargo`（`/`）を毎週チェックし、`staging` ブランチ宛てに PR を作成する。
 
 ---
 

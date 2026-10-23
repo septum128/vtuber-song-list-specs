@@ -12,6 +12,7 @@
   - `m20260319_000007_create_favorites.rs`
   - `m20260328_022428_add_icon_url_to_channels.rs`
   - `m20260926_134141_add_unique_index_to_users_name.rs`
+  - `m20261023_094647_widen_primary_keys_to_bigint.rs`
 - `src/models/_entities/` 配下の SeaORM エンティティ（`sea-orm-codegen` 生成物・手動編集禁止）
 - `src/models/` 配下のビジネスロジック層（Enum 定数・スコープ・ファインダ）
 
@@ -21,7 +22,8 @@
 
 - DB エンジン: **PostgreSQL**（開発は SQLite も可。`sea-orm` の `sqlx-postgres` / `sqlx-sqlite` 両フィーチャを有効化）
 - マイグレーションは `loco_rs::schema` のヘルパ（`create_table` / `add_column` 等）で記述。SeaORM の `migration` クレート（`migration/`）に属し、`migration/src/lib.rs` の `Migrator` に登録する。
-- 主キー `id` は `ColType::PkAuto`（`integer` の auto increment、`NOT NULL`）。エンティティ上の型は `i32`。
+- 主キー `id` は `ColType::PkAuto`（`bigint` の auto increment、`NOT NULL`）。エンティティ上の型は `i64`。
+  - Loco 0.16 時代の `PkAuto` は `integer` を作っていたため、それ以前に作成された DB は `m20261023_094647_widen_primary_keys_to_bigint` で全 7 テーブルの `id`・連番シーケンス（`AS bigint`）・`song_items.latest_diff_id` を `bigint` に拡張する（PostgreSQL のみ。既に `bigint` なら実質 no-op。`down` は何もしない不可逆マイグレーション）。詳細は `fix_spec.md` の `fix/issue-195` 参照。
 - 外部キー列（`channel_id` / `video_id` / `song_item_id` / `made_by_id` / `comment_id` / `user_id`）は `ColType::BigInteger`（`bigint`）。エンティティ上の型は `i64`。
 - `create_table` ヘルパにより全テーブルへ `created_at` / `updated_at`（`timestamptz`・`NOT NULL`）が自動付与される。
 - 論理削除は使用していない。関連レコードの削除はアプリケーション側で明示的に実施する（例: `song_items` 削除時に `latest_diff_id` を NULL 化してから `song_diffs` を削除）。
@@ -48,7 +50,7 @@
 
 | カラム名 | データ型 | NOT NULL | デフォルト値 | 備考 |
 |---|---|---|---|---|
-| id | integer | ✓ | auto increment | PK |
+| id | bigint | ✓ | auto increment | PK |
 | pid | uuid | ✓ | - | JWT の subject。`before_save` で挿入時に採番 |
 | email | varchar | ✓ | - | unique。登録時にユーザーが入力した実アドレス（メール送信先） |
 | password | varchar | ✓ | - | Argon2 ハッシュ（`loco_rs::hash`） |
@@ -86,7 +88,7 @@ YouTube チャンネル情報。
 
 | カラム名 | データ型 | NOT NULL | デフォルト値 | 備考 |
 |---|---|---|---|---|
-| id | integer | ✓ | auto increment | PK |
+| id | bigint | ✓ | auto increment | PK |
 | channel_id | varchar | ✓ | - | unique。YouTube のチャンネル ID（`UC...`） |
 | name | varchar | - | - | YouTube 上のチャンネル名 |
 | custom_name | varchar | ✓ | `''` | サイト表示名。動画一括登録の突合キー |
@@ -122,7 +124,7 @@ YouTube 動画・ライブ配信情報。
 
 | カラム名 | データ型 | NOT NULL | デフォルト値 | 備考 |
 |---|---|---|---|---|
-| id | integer | ✓ | auto increment | PK |
+| id | bigint | ✓ | auto increment | PK |
 | channel_id | bigint | ✓ | - | FK → `channels.id` |
 | video_id | varchar | ✓ | - | unique。YouTube の動画 ID |
 | title | varchar | ✓ | - | |
@@ -170,7 +172,7 @@ YouTube 動画のコメント（セトリ情報源）。
 
 | カラム名 | データ型 | NOT NULL | デフォルト値 | 備考 |
 |---|---|---|---|---|
-| id | integer | ✓ | auto increment | PK |
+| id | bigint | ✓ | auto increment | PK |
 | comment_id | varchar | ✓ | - | unique。YouTube のコメント ID |
 | video_id | bigint | ✓ | - | FK → `videos.id` |
 | author | varchar | ✓ | - | |
@@ -203,9 +205,9 @@ YouTube 動画のコメント（セトリ情報源）。
 
 | カラム名 | データ型 | NOT NULL | デフォルト値 | 備考 |
 |---|---|---|---|---|
-| id | integer | ✓ | auto increment | PK |
+| id | bigint | ✓ | auto increment | PK |
 | video_id | bigint | ✓ | - | FK → `videos.id` |
-| latest_diff_id | integer | - | - | 最新の確定 `song_diffs.id` への非正規化参照。**DB 上の FK 制約はなし** |
+| latest_diff_id | bigint | - | - | 最新の確定 `song_diffs.id` への非正規化参照。**DB 上の FK 制約はなし**（`m20261023_094647` で `integer` → `bigint`） |
 | created_at | timestamptz | ✓ | - | |
 | updated_at | timestamptz | ✓ | - | |
 
@@ -231,7 +233,7 @@ YouTube 動画のコメント（セトリ情報源）。
 
 | カラム名 | データ型 | NOT NULL | デフォルト値 | 備考 |
 |---|---|---|---|---|
-| id | integer | ✓ | auto increment | PK |
+| id | bigint | ✓ | auto increment | PK |
 | song_item_id | bigint | ✓ | - | FK → `song_items.id` |
 | made_by_id | bigint | - | - | FK → `users.id`（nullable）。投稿ユーザー |
 | comment_id | bigint | - | - | FK → `comments.id`（nullable）。AI 抽出元コメント |
@@ -276,7 +278,7 @@ YouTube 動画のコメント（セトリ情報源）。
 
 | カラム名 | データ型 | NOT NULL | デフォルト値 | 備考 |
 |---|---|---|---|---|
-| id | integer | ✓ | auto increment | PK |
+| id | bigint | ✓ | auto increment | PK |
 | user_id | bigint | ✓ | - | FK → `users.id` |
 | song_item_id | bigint | ✓ | - | FK → `song_items.id` |
 | created_at | timestamptz | ✓ | - | |
@@ -297,7 +299,7 @@ YouTube 動画のコメント（セトリ情報源）。
 ```mermaid
 erDiagram
     users {
-        integer id PK
+        bigint id PK
         uuid pid
         varchar email
         varchar password
@@ -316,7 +318,7 @@ erDiagram
     }
 
     channels {
-        integer id PK
+        bigint id PK
         varchar channel_id
         varchar name
         varchar custom_name
@@ -330,7 +332,7 @@ erDiagram
     }
 
     videos {
-        integer id PK
+        bigint id PK
         bigint channel_id FK
         varchar video_id
         varchar title
@@ -344,7 +346,7 @@ erDiagram
     }
 
     comments {
-        integer id PK
+        bigint id PK
         varchar comment_id
         bigint video_id FK
         varchar author
@@ -356,15 +358,15 @@ erDiagram
     }
 
     song_items {
-        integer id PK
+        bigint id PK
         bigint video_id FK
-        integer latest_diff_id
+        bigint latest_diff_id
         timestamptz created_at
         timestamptz updated_at
     }
 
     song_diffs {
-        integer id PK
+        bigint id PK
         bigint song_item_id FK
         bigint made_by_id FK
         bigint comment_id FK
@@ -378,7 +380,7 @@ erDiagram
     }
 
     favorites {
-        integer id PK
+        bigint id PK
         bigint user_id FK
         bigint song_item_id FK
         timestamptz created_at

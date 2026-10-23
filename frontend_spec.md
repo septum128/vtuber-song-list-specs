@@ -41,7 +41,7 @@ frontend/
 
 | カテゴリ | ライブラリ | `package.json` の指定 |
 |---|---|---|
-| フレームワーク | Next.js（Pages Router） | `^15.5.21` |
+| フレームワーク | Next.js（Pages Router） | `^16.4.2` |
 | UI | React / React DOM | `^19.0.0` |
 | 言語 | TypeScript | `^5.7.0` |
 | データフェッチ | SWR | `^2.3.0` |
@@ -51,8 +51,8 @@ frontend/
 | SCSS | sass | `^1.85.0` |
 | 日付 | date-fns | `^4.1.0` |
 | テスト | Jest / Testing Library | `jest ^29.7.0` / `@testing-library/react ^16.3.0` |
-| デプロイアダプタ | `@opennextjs/cloudflare` | `^1.20.2` |
-| Cloudflare CLI | wrangler | `^4.127.0` |
+| デプロイアダプタ | `@opennextjs/cloudflare` | `^1.20.13` |
+| Cloudflare CLI | wrangler | `^4.151.3` |
 | パッケージマネージャ | pnpm | `pnpm@10.32.1`（`packageManager`） |
 
 ---
@@ -183,7 +183,8 @@ AuthResponse = { message, user: UserType, token }
 - **チャンネル管理**: 作成（YouTube チャンネル ID）・編集（表示名 / Twitter / 公開区分 / アイコン再取得）・削除。
 - **動画管理**:
   - 個別追加（YouTube URL または動画 ID）、TSV 一括登録。
-  - チャンネル絞込・「歌枠のみ」フィルタ・表示件数（30 / 50 / 100 件、既定 30）・ページング。「歌枠のみ」と表示件数は `localStorage`（`admin_video_list_only_song_lives` / `admin_video_list_per_page`）に永続化し、他ページから戻っても状態を維持（`fix_spec.md` の `fix/issue-134` 参照）。
+  - チャンネル絞込・「歌枠のみ」フィルタ・並び順（「配信日順」= `published_at` 降順 / 「ID順」= `id` 降順、既定は配信日順）・表示件数（30 / 50 / 100 件、既定 30）・ページング。並び順を変えると 1 ページ目に戻る。「ID順」のときのみ API に `sort=id` を付与する（`useAdminVideos`）。
+  - 「歌枠のみ」・並び順・表示件数は `localStorage`（`admin_video_list_only_song_lives` / `admin_video_list_sort` / `admin_video_list_per_page`）に永続化し、他ページから戻っても状態を維持（`fix_spec.md` の `fix/issue-134` 参照）。hydration 不一致を避けるため、保存値はマウント後の `useEffect` で読み込む。
   - 動画ごとの「セトリ取得」/「再取得（force）」、複数選択しての一括セトリ取得。
   - 複数選択しての**一括公開 / 一括非公開**（`published` のみ更新、`published_at` は変更しない）。
   - **エクスポート機能**（`src/utils/videoExport.ts`）: 選択した動画を「タイトル`<TAB>`URL」の行に整形し、テキストファイルのダウンロード（`videos_YYYYMMDD_HHMMSS.txt`）またはクリップボードへのコピー。ページを跨いだ選択を `Map<id, VideoType>` で保持。
@@ -253,4 +254,4 @@ AuthResponse = { message, user: UserType, token }
   - `src/utils/__tests__/api.test.ts`
   - `src/utils/__tests__/storage.test.ts`
   - `src/utils/__tests__/videoExport.test.ts`
-- Lint は ESLint 9（`eslint.config.mjs`、`next/core-web-vitals` + `next/typescript`）。CI では `pnpm lint` に加え `pnpm tsc --noEmit` で型チェック。
+- Lint は ESLint 9（`eslint.config.mjs`。`eslint-config-next` 16 のフラット設定 `eslint-config-next/core-web-vitals` + `eslint-config-next/typescript` を直接展開。`@eslint/eslintrc` の `FlatCompat` は不使用）。`react-hooks/set-state-in-effect` ルールが有効なため、マウント後に `localStorage` 等を読んで state を設定する箇所（`ThemeProvider` / `Modal` / 管理画面 `VideoList`）は理由コメント付きで個別に無効化している。CI では `pnpm lint` に加え `pnpm tsc --noEmit` で型チェック。
