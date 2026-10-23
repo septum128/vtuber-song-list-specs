@@ -166,3 +166,21 @@
 **修正内容:**
 
 - `src/mailers/auth/{welcome,forgot,magic_link}/html.t`: 先頭の `;` を削除（`;<html>` → `<html>`）。
+
+---
+
+## fix/issue-195: loco 1.2 アップグレード後、既存 DB で INT4 の主キーを読めず 500 になる
+
+**症状:** PR #194（`loco-rs` 0.16 → 1.2 / SeaORM 2.0 へのアップグレード）を staging にマージした後、`/api/channels` と `/api/user` が 500 を返す。ログには `error occurred while decoding column "id": mismatched types; Rust type Option<i64> (as SQL type INT8) is not compatible with SQL type INT4` が出力される。
+
+**原因:** マイグレーションのヘルパ `ColType::PkAuto` が作る列の型が、Loco 0.16 では `integer`、Loco 1.x では `bigint` に変わり、エンティティの主キーも `i64` になった。sqlx 0.9 は `INT4` を `i64` にデコードできないが、staging / production の DB は 0.16 時代に作られたため主キーが `integer` のままだった。テストはマイグレーションから新規作成したスキーマ（`bigint`）で動くため検出できなかった。
+
+**修正内容:**
+
+- `migration/src/m20261023_094647_widen_primary_keys_to_bigint.rs` を追加
+  - `users` / `channels` / `videos` / `comments` / `song_items` / `song_diffs` / `favorites` の `id` を `ALTER COLUMN ... TYPE bigint`
+  - `pg_get_serial_sequence` で取得した連番シーケンスを `ALTER SEQUENCE ... AS bigint`（`serial` 由来の `AS integer` のままだと 2^31-1 で枯渇するため）
+  - `song_diffs.id` を参照する `song_items.latest_diff_id` も `bigint` に変更
+  - PostgreSQL 以外（SQLite）では何もしない。既に `bigint` の DB では実質 no-op。`down` は何もしない（`integer` に戻すと `i64` のエンティティが壊れるため）
+- エンティティ・モデル・コントローラ・ワーカーの主キー / `latest_diff_id` / パスパラメータ / `video_ids` 等を `i64` に統一し、`i32` ⇔ `i64` の変換（`i64::from` / `as i32` キャスト）を削除
+- 運用上の注意: staging は `auto_migrate: true` のためデプロイ時に自動適用される。`ALTER COLUMN TYPE` はテーブルを書き直す間ロックを取る
